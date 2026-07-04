@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-codex-toolkit"
+version = "0.2.0"
+description = "Backup, restore, migrate, convert, export & search AI-coding chat history across Claude Code and OpenAI Codex."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Mo Bamzadeh" }]
+keywords = ["claude", "codex", "backup", "chat-history", "migration", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.optional-dependencies]
+crypto = ["cryptography>=3.4"]
+dev = ["pytest>=7", "cryptography>=3.4"]
+
+[project.scripts]
+cct = "claude_tool:main"
+
+[project.gui-scripts]
+cct-gui = "claude_tool_gui:main"
+
+[project.urls]
+Homepage = "https://github.com/Mo-mac67/claude-codex-toolkit"
+Issues = "https://github.com/Mo-mac67/claude-codex-toolkit/issues"
+
+[tool.setuptools]
+py-modules = ["claude_tool", "claude_tool_gui"]

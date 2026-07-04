@@ -1,9 +1,18 @@
 # backup snapshots (never commit user data / tokens!)
 backup_*/
+backup_*.zip
 claude_*/
 codex_*/
+.extract_*/
+exports/
 backup_log.txt
+cct_config.json
 *.log
 
+# python
 __pycache__/
 *.pyc
+build/
+dist/
+*.egg-info/
+.pytest_cache/
