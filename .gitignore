@@ -1,0 +1,9 @@
+# backup snapshots (never commit user data / tokens!)
+backup_*/
+claude_*/
+codex_*/
+backup_log.txt
+*.log
+
+__pycache__/
+*.pyc
