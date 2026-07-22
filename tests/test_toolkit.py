@@ -171,6 +171,83 @@ def test_search(env, capsys):
     out = capsys.readouterr().out
     assert "matched" in out and "1 session" in out
 
+# ---------------------------------------------- profiles / user switching --
+def _fake_jwt(email):
+    import base64
+    p = base64.urlsafe_b64encode(json.dumps({"email": email}).encode()).decode().rstrip("=")
+    return f"x.{p}.y"
+
+def make_codex_login(home, email):
+    (home / ".codex").mkdir(exist_ok=True)
+    (home / ".codex" / "auth.json").write_text(
+        json.dumps({"tokens": {"id_token": _fake_jwt(email)}}), encoding="utf-8")
+
+def make_claude_login(home, email):
+    (home / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"emailAddress": email}}), encoding="utf-8")
+
+def test_account_label(env):
+    home, _ = env
+    assert ct.account_label("codex") is None          # not logged in
+    assert ct.account_label("claude") is None
+    make_codex_login(home, "a@x.com"); make_claude_login(home, "b@y.com")
+    assert ct.account_label("codex") == "a@x.com"
+    assert ct.account_label("claude") == "b@y.com"
+
+def test_profile_save_switch_roundtrip(env):
+    home, _ = env
+    make_codex_login(home, "old@x.com")
+    assert ct.profile_save("codex") is not None
+    make_codex_login(home, "new@x.com")               # simulate fresh login
+    assert ct.profile_switch("codex", "old@x.com") is True
+    assert ct.account_label("codex") == "old@x.com"
+    # switching auto-saved the login it replaced -> we can go back
+    names = [p.name for p in ct.profile_list("codex")]
+    assert "new@x.com" in names
+    assert ct.profile_switch("codex", "new@x.com") is True
+    assert ct.account_label("codex") == "new@x.com"
+
+def test_profile_switch_missing(env):
+    assert ct.profile_switch("codex", "nope") is False
+
+def test_switch_codex_never_touches_claude(env):
+    """Apps are isolated: saving/switching a Codex profile must leave every
+    Claude file byte-for-byte identical (and vice versa)."""
+    home, _ = env
+    make_codex_login(home, "one@x.com")
+    make_claude_login(home, "keep@y.com")
+    claude_json_before = (home / ".claude.json").read_bytes()
+    claude_chat = make_claude(home)
+    chat_before = claude_chat.read_bytes()
+    ct.profile_save("codex")
+    make_codex_login(home, "two@x.com")
+    assert ct.profile_switch("codex", "one@x.com") is True
+    assert (home / ".claude.json").read_bytes() == claude_json_before
+    assert claude_chat.read_bytes() == chat_before
+    assert ct.account_label("claude") == "keep@y.com"
+    # and the mirror image: switching Claude leaves Codex alone
+    codex_auth_before = (home / ".codex" / "auth.json").read_bytes()
+    ct.profile_save("claude")
+    make_claude_login(home, "other@y.com")
+    assert ct.profile_switch("claude", "keep@y.com") is True
+    assert (home / ".codex" / "auth.json").read_bytes() == codex_auth_before
+    assert ct.account_label("codex") == "one@x.com"
+
+def test_migrate_prepare_and_finish(env):
+    home, _ = env
+    make_claude(home)
+    make_claude_login(home, "old@u.com")
+    before = ct.migrate_prepare(["claude"])
+    assert before["claude"]["account"] == "old@u.com"
+    assert before["claude"]["n"] == 1
+    # account not changed yet -> verify must fail
+    assert ct.migrate_finish(["claude"], before) is False
+    make_claude_login(home, "new@u.com")              # simulate new-account login
+    assert ct.migrate_finish(["claude"], before) is True
+    names = [p.name for p in ct.profile_list("claude")]
+    assert "old@u.com" in names and "new@u.com" in names   # both switchable
+
+
 @pytest.mark.skipif(ct._load_cryptography() is None, reason="cryptography not installed")
 def test_encryption_roundtrip(env):
     home, backup = env

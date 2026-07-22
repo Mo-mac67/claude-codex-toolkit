@@ -1,6 +1,7 @@
 # backup snapshots (never commit user data / tokens!)
 backup_*/
 backup_*.zip
+profiles/
 claude_*/
 codex_*/
 .extract_*/

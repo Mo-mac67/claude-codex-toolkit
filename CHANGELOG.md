@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-07-21
+
+Account migration & fast user switching (works for both Claude Code and Codex).
+
+### Added
+- **Migrate wizard** (menu 11, `migrate` command, GUI *Migrate* tab) — guided
+  account change with zero chat loss: full safety backup → current login saved
+  as a profile → user logs into the new account → wizard verifies the account
+  changed and every session survived, then saves the new login as a profile too.
+- **Quick user switch** (menu 12, `switch` command, GUI *Accounts* tab) —
+  named login *profiles* per app stored under `profiles/<app>/<name>`;
+  switching auto-saves the login being replaced, so it is always reversible.
+  `switch --list`, `switch <app> --save [name]`, `switch <app> <profile>`.
+- **Account detection** — shows the e-mail behind each live login and each
+  saved profile (Codex: decoded from `auth.json` id-token; Claude Code: from
+  `oauthAccount` in `.claude.json`).
+- Tests for account detection, profile save/switch round-trip and the
+  migrate prepare/verify flow. `profiles/` added to `.gitignore`.
+
 ## 0.2.0 — 2026-07-04
 
 Big feature release (Waves 1–3).

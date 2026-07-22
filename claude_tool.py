@@ -11,6 +11,10 @@ Non-interactive:  python claude_tool.py backup
                   python claude_tool.py verify <backup>
                   python claude_tool.py search "<text>"
                   python claude_tool.py export claude|codex
+                  python claude_tool.py migrate
+                  python claude_tool.py switch [codex|claude] [profile]
+                  python claude_tool.py switch codex --save [name]
+                  python claude_tool.py switch --list
 
 Everything is non-destructive: the tool only writes NEW files; it never
 deletes your chats. (Retention pruning of old *backups* is opt-in.)
@@ -339,6 +343,166 @@ def cloud_upload(path, remote):
     ok = (r.returncode == 0)
     print("  Upload complete." if ok else "  Upload failed.")
     return ok
+
+# ------------------------------------------- profiles / account switching ---
+# A "profile" is a saved copy of ONE app's login files, so you can flip
+# between accounts in seconds. Chats are never touched — they live outside
+# the credential files and stay on disk whichever account is active.
+APP_CREDS = {
+    "codex":  [".codex/auth.json", ".codex/cap_sid", ".codex/installation_id"],
+    "claude": [".claude.json", ".claude.json.backup"],
+}
+APP_NAMES = {"codex": "Codex", "claude": "Claude Code"}
+
+def _jwt_claims(tok):
+    try:
+        p = tok.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+    except Exception:
+        return {}
+
+def account_label(app, base=None):
+    """Best-effort account e-mail from an app's live (or backed-up) login files.
+    Returns None when not logged in / files absent."""
+    base = Path(base) if base else HOME
+    try:
+        if app == "codex":
+            d = json.loads((base / ".codex" / "auth.json").read_text(encoding="utf-8"))
+            email = _jwt_claims((d.get("tokens") or {}).get("id_token", "")).get("email")
+            return email or ("API key" if d.get("OPENAI_API_KEY") else "unknown")
+        d = json.loads((base / ".claude.json").read_text(encoding="utf-8"))
+        return (d.get("oauthAccount") or {}).get("emailAddress") or "unknown"
+    except Exception:
+        return None
+
+def _profile_root(app): return BACKUP_ROOT / "profiles" / app
+
+def profile_list(app):
+    root = _profile_root(app)
+    return sorted([p for p in root.iterdir() if p.is_dir()]) if root.exists() else []
+
+def profile_account(pdir):
+    try:
+        return json.loads((Path(pdir) / "profile.json").read_text(encoding="utf-8")).get("account")
+    except Exception:
+        return None
+
+def profile_save(app, name=None):
+    """Copy the app's live login files into profiles/<app>/<name>."""
+    label = account_label(app)
+    if label is None:
+        print(f"  {APP_NAMES[app]}: not logged in — nothing to save. | لاگین نیستی.")
+        return None
+    name = name or re.sub(r"[^A-Za-z0-9._@-]+", "_", label)
+    dest = _profile_root(app) / name
+    n = 0
+    for rel in APP_CREDS[app]:
+        src = HOME / rel
+        if src.exists():
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, out); n += 1
+    if not n:
+        print(f"  {APP_NAMES[app]}: no login files found."); return None
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "profile.json").write_text(json.dumps(
+        {"app": app, "account": label, "saved": iso_now()}, indent=2), encoding="utf-8")
+    print(f"  Profile saved: {APP_NAMES[app]} / {name}  ({label}) | پروفایل ذخیره شد.")
+    return dest
+
+def profile_switch(app, name):
+    """Swap the app's live login for a saved profile. The login that is being
+    replaced is auto-saved first, so switching is always reversible."""
+    src = _profile_root(app) / name
+    if not (src / "profile.json").exists() and \
+       not any((src / rel).exists() for rel in APP_CREDS[app]):
+        print(f"  Profile not found: {name} | پروفایل پیدا نشد."); return False
+    if account_label(app) is not None:
+        profile_save(app)                              # keep a way back
+    for rel in APP_CREDS[app]:                         # true swap: clear, then copy
+        live = HOME / rel
+        if live.exists(): live.unlink()
+        f = src / rel
+        if f.exists():
+            live.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, live)
+    print(f"  {APP_NAMES[app]} -> '{name}'  ({account_label(app) or '?'}). "
+          f"Restart the app. | سوییچ شد؛ برنامه رو ببند و باز کن.")
+    return True
+
+def profile_delete(app, name):
+    d = _profile_root(app) / name
+    if d.exists():
+        shutil.rmtree(d); print(f"  Deleted profile {name}. | حذف شد."); return True
+    print("  Profile not found. | پیدا نشد."); return False
+
+# ------------------------------------------------------------- migrate ------
+def migrate_status(apps):
+    return {a: {"account": account_label(a), "n": len(ADAPTERS[a]["list"]())} for a in apps}
+
+def migrate_prepare(apps, backup=True):
+    """Wizard steps 1+2: safety backup + save current logins as profiles."""
+    before = migrate_status(apps)
+    for a in apps:
+        print(f"  {APP_NAMES[a]:11}: {before[a]['account'] or 'not logged in'}"
+              f"  ({before[a]['n']} sessions)")
+    if backup:
+        print("\n  Taking a full safety backup ... | بک‌آپ کامل ...")
+        do_backup()
+    for a in apps:
+        if before[a]["account"]: profile_save(a)
+    return before
+
+def migrate_finish(apps, before):
+    """Wizard last step: verify accounts changed and every chat survived,
+    then save the new login as a profile too."""
+    ok = True
+    after = migrate_status(apps)
+    for a in apps:
+        o, n = before[a], after[a]
+        print(f"\n  {APP_NAMES[a]}:")
+        print(f"    account : {o['account'] or '—'}  ->  {n['account'] or '—'}")
+        note = "[OK] all chats intact" if n["n"] >= o["n"] else "[!] FEWER sessions than before"
+        print(f"    sessions: {o['n']} -> {n['n']}   {note}")
+        if n["n"] < o["n"]: ok = False
+        if not n["account"] or n["account"] == o["account"]:
+            print("    [!] account unchanged — log into the NEW account, then verify again."
+                  " | اکانت عوض نشده؛ اول با اکانت جدید وارد شو.")
+            ok = False
+        else:
+            profile_save(a)                            # new login is switchable too
+    return ok
+
+def do_migrate():
+    print("""
+  ============== Migrate wizard | ویزارد تعویض اکانت ==============
+  Change account WITHOUT losing chats. Chats live on disk, not in the
+  account: we back everything up, keep your current login as a profile,
+  you log into the new account, then we verify every chat survived.
+  چت‌ها روی دیسک‌ان نه توی اکانت؛ بک‌آپ می‌گیریم، لاگین فعلی رو نگه
+  می‌داریم، با اکانت جدید وارد می‌شی و آخرش سلامت چت‌ها چک می‌شه.""")
+    ch = ask("\n  App | برنامه:  1) Codex  2) Claude Code  3) both [3]: ").strip()
+    apps = {"1": ["codex"], "2": ["claude"]}.get(ch, ["codex", "claude"])
+    print("\n  Step 1+2/4 — backup & save current login | بک‌آپ + ذخیره لاگین فعلی")
+    before = migrate_prepare(apps)
+    print("\n  Step 3/4 — log into the NEW account | با اکانت جدید وارد شو:")
+    if "codex" in apps:
+        print("    Codex      : codex logout   then   codex login")
+        if ask("    Run those two commands here now? (y/n) | همینجا اجرا بشه؟ : ").lower() == "y":
+            subprocess.run(["codex", "logout"], shell=(os.name == "nt"))
+            subprocess.run(["codex", "login"],  shell=(os.name == "nt"))
+    if "claude" in apps:
+        print("    Claude Code: run `claude`, then /logout — it re-opens the login flow.")
+    while True:
+        if ask("\n  Enter = verify now / q = cancel | اینتر = بررسی، q = لغو: ").lower() == "q":
+            print("  Cancelled. The wizard changed nothing. | لغو شد."); return
+        print("\n  Step 4/4 — verify | بررسی نهایی")
+        if migrate_finish(apps, before):
+            print("\n  [DONE] Migration complete — old & new logins saved as profiles;")
+            print("  switch anytime via 'Switch user'. | تمام شد؛ با «سوییچ یوزر» می‌تونی برگردی.")
+            return
+        if ask("  Verify again? (y = again / Enter = exit) | دوباره؟ : ").lower() != "y":
+            return
 
 # --------------------------------------------- chat format: shared model ----
 # A conversation is a list of dicts: {"role","text","ts","kind"}  kind: text|tool
@@ -696,6 +860,35 @@ def menu_cloud():
     chosen = pick(snaps, lambda s: s.name, "Backups to upload")
     for s in chosen: cloud_upload(s, remote)
 
+def menu_switch():
+    print("\n  Current logins | لاگین‌های فعلی:")
+    for a in ("codex", "claude"):
+        print(f"   {APP_NAMES[a]:11}: {account_label(a) or 'not logged in'}")
+    ch = ask("  App | برنامه:  1) Codex  2) Claude Code [1]: ").strip()
+    app = "claude" if ch == "2" else "codex"
+    profs = profile_list(app)
+    cur = account_label(app)
+    print(f"\n  {APP_NAMES[app]} profiles | پروفایل‌ها:")
+    for i, p in enumerate(profs, 1):
+        acc = profile_account(p)
+        mark = "   <- current | فعلی" if acc and acc == cur else ""
+        print(f"   {i:2}) {p.name}  ({acc or '?'}){mark}")
+    if not profs:
+        print("   (none yet — save one first | هنوز پروفایلی نیست)")
+    print("    s) save current login as a profile | ذخیره لاگین فعلی")
+    if profs:
+        print("    d) delete a profile | حذف پروفایل")
+    sel = ask("  Switch to # / s / d | انتخاب: ").strip().lower()
+    if sel == "s":
+        name = ask("  Profile name (Enter = account e-mail) | اسم پروفایل: ").strip()
+        profile_save(app, name or None)
+    elif sel == "d" and profs:
+        n = ask("  Delete which #? | حذف کدوم؟ : ")
+        if n.isdigit() and 1 <= int(n) <= len(profs):
+            profile_delete(app, profs[int(n) - 1].name)
+    elif sel.isdigit() and 1 <= int(sel) <= len(profs):
+        profile_switch(app, profs[int(sel) - 1].name)
+
 MENU = """
 ==========================================================
    Claude + Codex Toolkit
@@ -710,6 +903,8 @@ MENU = """
   8) Verify a backup (checksums)    | بررسی سلامت بک‌آپ
   9) Upload a backup to cloud       | آپلود ابری
  10) Settings                       | تنظیمات
+ 11) Migrate to a new account       | ویزارد تعویض اکانت
+ 12) Switch user (saved profiles)   | سوییچ سریع یوزر
   0) Exit                           | خروج
 """
 
@@ -728,6 +923,8 @@ def interactive():
         elif ch == "8": menu_verify()
         elif ch == "9": menu_cloud()
         elif ch == "10": do_settings()
+        elif ch == "11": do_migrate()
+        elif ch == "12": menu_switch()
         elif ch == "0": break
 
 def main(argv=None):
@@ -737,12 +934,31 @@ def main(argv=None):
     v = sub.add_parser("verify"); v.add_argument("path")
     s = sub.add_parser("search"); s.add_argument("query"); s.add_argument("--backups", action="store_true")
     e = sub.add_parser("export"); e.add_argument("source", choices=["claude", "codex"]); e.add_argument("--html", action="store_true")
+    sub.add_parser("migrate")
+    sw = sub.add_parser("switch")
+    sw.add_argument("app", nargs="?", choices=["codex", "claude"])
+    sw.add_argument("profile", nargs="?")
+    sw.add_argument("--save", nargs="?", const="", default=None, metavar="NAME")
+    sw.add_argument("--list", action="store_true")
     args = ap.parse_args(argv)
     if args.cmd == "backup":  do_backup()
     elif args.cmd == "verify": verify_manifest(Path(args.path))
     elif args.cmd == "search": search_all(args.query, include_backups=args.backups)
     elif args.cmd == "export":
         for f in ADAPTERS[args.source]["list"](): export_file(args.source, f, "html" if args.html else "md")
+    elif args.cmd == "migrate": do_migrate()
+    elif args.cmd == "switch":
+        if args.list:
+            for a in ("codex", "claude"):
+                print(f"  {APP_NAMES[a]:11}: {account_label(a) or 'not logged in'}")
+                for p in profile_list(a):
+                    print(f"       {p.name}  ({profile_account(p) or '?'})")
+        elif args.app and args.save is not None:
+            profile_save(args.app, args.save or None)
+        elif args.app and args.profile:
+            profile_switch(args.app, args.profile)
+        else:
+            menu_switch()
     else: interactive()
 
 if __name__ == "__main__":

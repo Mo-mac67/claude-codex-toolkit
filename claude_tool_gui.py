@@ -37,27 +37,34 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Claude + Codex Toolkit")
-        self.geometry("860x600")
+        self.geometry("880x640")
         self.q = queue.Queue()
+        self.done_q = queue.Queue()          # callbacks to run on the UI thread
         nb = ttk.Notebook(self); nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
-        self._tab_backup(nb); self._tab_restore(nb); self._tab_convert(nb)
-        self._tab_export(nb); self._tab_search(nb); self._tab_settings(nb)
+        self._tab_backup(nb); self._tab_restore(nb); self._tab_accounts(nb)
+        self._tab_migrate(nb); self._tab_convert(nb); self._tab_export(nb)
+        self._tab_search(nb); self._tab_settings(nb)
         self.log = tk.Text(self, height=10, bg="#0d1117", fg="#e6edf3", insertbackground="#fff")
         self.log.pack(fill="both", expand=False, padx=8, pady=8)
         self.after(120, self._drain)
 
     # -- helpers ------------------------------------------------------------
-    def _run(self, fn):
+    def _run(self, fn, done=None):
         def worker():
             tee = _StdoutTee(self.q); old = sys.stdout; sys.stdout = tee
             try: fn()
             except Exception as e: print(f"  ERROR: {e}")
-            finally: sys.stdout = old; self.q.put("\n")
+            finally:
+                sys.stdout = old; self.q.put("\n")
+                if done: self.done_q.put(done)
         threading.Thread(target=worker, daemon=True).start()
 
     def _drain(self):
         try:
             while True: self.log.insert("end", self.q.get_nowait()); self.log.see("end")
+        except queue.Empty: pass
+        try:
+            while True: self.done_q.get_nowait()()
         except queue.Empty: pass
         self.after(120, self._drain)
 
@@ -111,6 +118,101 @@ class App(tk.Tk):
         ct._restore_from_dir(src, self.full.get())
         if tmp: shutil.rmtree(tmp, ignore_errors=True)
         print("  Restart Claude Code / Codex.")
+
+    def _tab_accounts(self, nb):
+        f = ttk.Frame(nb); nb.add(f, text="Accounts")
+        ttk.Label(f, text="Fast user switch — save each account's login once, then flip between "
+                          "accounts in seconds. Chats are never touched.",
+                  wraplength=800).pack(anchor="w", padx=10, pady=(8, 2))
+        self.acc = {}
+        for app in ("codex", "claude"):
+            lf = ttk.LabelFrame(f, text=ct.APP_NAMES[app]); lf.pack(fill="both", expand=True, padx=10, pady=5)
+            cur = ttk.Label(lf, text="Current: ?"); cur.pack(anchor="w", padx=8, pady=(4, 2))
+            lb = tk.Listbox(lf, height=4); lb.pack(fill="both", expand=True, padx=8, pady=2)
+            bar = ttk.Frame(lf); bar.pack(fill="x", padx=8, pady=(2, 6))
+            ttk.Button(bar, text="Save current login as profile",
+                       command=lambda a=app: self._acc_save(a)).pack(side="left")
+            ttk.Button(bar, text="Switch to selected",
+                       command=lambda a=app: self._acc_switch(a)).pack(side="left", padx=6)
+            ttk.Button(bar, text="Delete selected",
+                       command=lambda a=app: self._acc_delete(a)).pack(side="left")
+            ttk.Button(bar, text="Refresh", command=self._acc_refresh).pack(side="left", padx=6)
+            self.acc[app] = {"cur": cur, "lb": lb, "profiles": []}
+        self._acc_refresh()
+
+    def _acc_refresh(self):
+        for app, w in self.acc.items():
+            cur = ct.account_label(app)
+            w["cur"].config(text=f"Current: {cur or 'not logged in'}")
+            w["profiles"] = ct.profile_list(app)
+            w["lb"].delete(0, "end")
+            for p in w["profiles"]:
+                acc = ct.profile_account(p)
+                mark = "   <- current" if acc and acc == cur else ""
+                w["lb"].insert("end", f"{p.name}   ({acc or '?'}){mark}")
+
+    def _acc_pick(self, app):
+        w = self.acc[app]; sel = w["lb"].curselection()
+        if not sel:
+            messagebox.showinfo("Accounts", "Select a profile first."); return None
+        return w["profiles"][sel[0]]
+
+    def _acc_save(self, app):
+        self._run(lambda: ct.profile_save(app), done=self._acc_refresh)
+
+    def _acc_switch(self, app):
+        p = self._acc_pick(app)
+        if not p: return
+        if not messagebox.askyesno("Switch", f"Switch {ct.APP_NAMES[app]} to '{p.name}'?\n"
+                                   "The current login is saved automatically first."): return
+        self._run(lambda: ct.profile_switch(app, p.name), done=self._acc_refresh)
+
+    def _acc_delete(self, app):
+        p = self._acc_pick(app)
+        if not p: return
+        if not messagebox.askyesno("Delete", f"Delete profile '{p.name}'?\n"
+                                   "(only the saved login copy — no chats)"): return
+        self._run(lambda: ct.profile_delete(app, p.name), done=self._acc_refresh)
+
+    def _tab_migrate(self, nb):
+        f = ttk.Frame(nb); nb.add(f, text="Migrate")
+        ttk.Label(f, justify="left", wraplength=800, text=(
+            "Move to a NEW account without losing chats — chats live on disk, not in the account.\n\n"
+            "1)  Prepare: full backup + current login saved as a profile.\n"
+            "2)  Log into the new account yourself  —  Codex: `codex logout` then `codex login`;"
+            "  Claude Code: run `claude`, then /logout (it re-opens the login flow).\n"
+            "3)  Verify: accounts changed, every chat still there; the new login is saved as a "
+            "profile so you can switch back anytime (Accounts tab).")
+        ).pack(anchor="w", padx=10, pady=8)
+        self.mig_var = tk.StringVar(value="both")
+        row = ttk.Frame(f); row.pack(anchor="w", padx=10)
+        for lbl, val in (("Codex", "codex"), ("Claude Code", "claude"), ("Both", "both")):
+            ttk.Radiobutton(row, text=lbl, value=val, variable=self.mig_var).pack(side="left", padx=(0, 8))
+        bar = ttk.Frame(f); bar.pack(anchor="w", padx=10, pady=10)
+        ttk.Button(bar, text="1. Prepare (backup + save login)", command=self._mig_prepare).pack(side="left")
+        ttk.Button(bar, text="3. Verify migration", command=self._mig_verify).pack(side="left", padx=8)
+        self.mig_state = None
+
+    def _mig_apps(self):
+        v = self.mig_var.get()
+        return ["codex", "claude"] if v == "both" else [v]
+
+    def _mig_prepare(self):
+        apps = self._mig_apps()
+        def job():
+            before = ct.migrate_prepare(apps)
+            self.mig_state = (apps, before)
+            print("\n  Now log into the NEW account, then press '3. Verify migration'.")
+        self._run(job, done=self._acc_refresh)
+
+    def _mig_verify(self):
+        if not self.mig_state:
+            return messagebox.showinfo("Migrate", "Run step 1 (Prepare) first.")
+        apps, before = self.mig_state
+        def job():
+            if ct.migrate_finish(apps, before):
+                print("\n  [DONE] Migration complete — switch accounts anytime in the Accounts tab.")
+        self._run(job, done=self._acc_refresh)
 
     def _tab_convert(self, nb):
         f = ttk.Frame(nb); nb.add(f, text="Convert")
