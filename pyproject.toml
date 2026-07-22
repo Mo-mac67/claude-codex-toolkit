@@ -9,7 +9,7 @@ description = "Backup, restore, migrate, convert, export & search AI-coding chat
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-authors = [{ name = "Mo Bamzadeh" }]
+authors = [{ name = "Mo-mac67" }]
 keywords = ["claude", "codex", "backup", "chat-history", "migration", "cli"]
 classifiers = [
     "Programming Language :: Python :: 3",

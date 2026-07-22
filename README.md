@@ -146,4 +146,4 @@ python -m pytest -q
 
 ## License
 
-MIT — fork away. © 2026 Mo Bamzadeh
+MIT — fork away. © 2026 Mo-mac67

@@ -19,7 +19,7 @@ Non-interactive:  python claude_tool.py backup
 Everything is non-destructive: the tool only writes NEW files; it never
 deletes your chats. (Retention pruning of old *backups* is opt-in.)
 
-Author: Mo Bamzadeh — https://github.com/Mo-mac67
+Author: Mo-mac67 — https://github.com/Mo-mac67
 License: MIT
 """
 import argparse, base64, getpass, hashlib, html, json, os, re, shutil
